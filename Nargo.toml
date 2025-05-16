@@ -1,0 +1,6 @@
+[package]
+name = "noir_slow"
+type = "bin"
+authors = [""]
+
+[dependencies]
