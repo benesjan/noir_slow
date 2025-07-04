@@ -1,14 +1,19 @@
 use std::meta::derive;
 
-pub(crate) comptime fn derive_serialize(s: TypeDefinition) -> Quoted {
+#[derive_via(derive_serialize)]
+pub trait Serialize {
+    let N: u32;
+
+    fn serialize(self) -> [Field; N];
+}
+
+pub comptime fn derive_serialize(s: TypeDefinition) -> Quoted {
     let typ = s.as_type();
-    std::println("derive_serialize");
-    std::println(typ);
     let nested_struct = typ.as_data_type().unwrap();
     let params = nested_struct.0.fields(nested_struct.1);
 
     // The following will give us [<type_of_struct_member_1 as Serialize>::N, <type_of_struct_member_2 as Serialize>::N, ...]
-    let components_of_definition_of_n = params.map(|(_, param_type): (Quoted, Type)| {
+    let components_of_definition_of_n = params.map(|(_, param_type, _): (Quoted, Type, Quoted)| {
         quote {
             <$param_type as Serialize>::N
         }
@@ -18,15 +23,15 @@ pub(crate) comptime fn derive_serialize(s: TypeDefinition) -> Quoted {
     let right_hand_side_of_definition_of_n = components_of_definition_of_n.join(quote {+});
 
     let array_of_quotes_serializing_each_struct_member = params
-        .map(|(param_name, param_type): (Quoted, Type)| {
+        .map(|(param_name, param_type, _): (Quoted, Type, Quoted)| {
             quote {
-            let serialized_member = self.$param_name.serialize();
-            let serialized_member_len = <$param_type as Serialize>::N;
-            for i in 0..serialized_member_len {
-                result[i + offset] = serialized_member[i];
+                let serialized_member = self.$param_name.serialize();
+                let serialized_member_len = <$param_type as Serialize>::N;
+                for i in 0..serialized_member_len {
+                    result[i + offset] = serialized_member[i];
+                }
+                offset += serialized_member_len;
             }
-            offset += serialized_member_len;
-        }
         });
 
     let serialization_of_struct_members =
@@ -34,8 +39,9 @@ pub(crate) comptime fn derive_serialize(s: TypeDefinition) -> Quoted {
 
     quote {
         impl Serialize for $typ {
-            let N = $right_hand_side_of_definition_of_n;
+            let N: u32 = $right_hand_side_of_definition_of_n;
 
+            #[inline_always]
             fn serialize(self) -> [Field; Self::N] {
                 let mut result = [0; _];
                 let mut offset = 0;
@@ -48,61 +54,47 @@ pub(crate) comptime fn derive_serialize(s: TypeDefinition) -> Quoted {
     }
 }
 
-#[derive_via(derive_serialize)]
-pub trait Serialize {
-    let N: u32;
+impl Serialize for bool {
+    let N: u32 = 1;
 
-    fn serialize(self) -> [Field; N];
+    fn serialize(self) -> [Field; Self::N] {
+        [self as Field]
+    }
 }
 
-pub struct AppendOnlyTreeSnapshot {
-    pub root: Field,
-    // TODO(Alvaro) change this to a u64
-    pub next_available_leaf_index: u32,
+impl Serialize for u32 {
+    let N: u32 = 1;
+
+    fn serialize(self) -> [Field; Self::N] {
+        [self as Field]
+    }
 }
 
-#[derive(Serialize)]
-pub struct TreeSnapshots {
-    pub l1_to_l2_message_tree: AppendOnlyTreeSnapshot,
-    pub note_hash_tree: AppendOnlyTreeSnapshot,
-    pub nullifier_tree: AppendOnlyTreeSnapshot,
-    pub public_data_tree: AppendOnlyTreeSnapshot,
+impl Serialize for Field {
+    let N: u32 = 1;
+
+    fn serialize(self) -> [Field; Self::N] {
+        [self]
+    }
 }
 
-#[derive(Serialize)]
-pub struct Gas {
-    pub da_gas: u32,
-    pub l2_gas: u32,
-}
+impl<T, let N: u32> Serialize for [T; N]
+where
+    T: Serialize,
+{
+    let N: u32 = <T as Serialize>::N * N;
 
-#[derive(Serialize)]
-pub struct GasFees {
-    pub fee_per_da_gas: Field,
-    pub fee_per_l2_gas: Field,
+    fn serialize(self) -> [Field; Self::N] {
+        let mut result: [Field; _] = std::mem::zeroed();
+        for i in 0..N {
+            let serialized_t = self[i].serialize();
+            for j in 0..<T as Serialize>::N {
+                result[i * <T as Serialize>::N + j] = serialized_t[j];
+            }
+        }
+        result
+    }
 }
-
-#[derive(Serialize)]
-pub struct GasSettings {
-    pub gas_limits: Gas,
-    pub teardown_gas_limits: Gas,
-    pub max_fees_per_gas: GasFees,
-    pub max_priority_fees_per_gas: GasFees,
-}
-
-#[derive(Serialize)]
-pub struct AztecAddress {
-    pub inner: Field,
-}
-
-#[derive(Serialize)]
-pub struct PublicCallRequest {
-    pub msg_sender: AztecAddress,
-    pub contract_address: AztecAddress,
-    pub is_static_call: bool,
-    pub calldata_hash: Field,
-}
-
-pub global MAX_ENQUEUED_CALLS_PER_TX: u32 = 32;
 
 #[derive(Serialize)]
 pub struct PrivateToAvmAccumulatedDataArrayLengths {
@@ -111,47 +103,113 @@ pub struct PrivateToAvmAccumulatedDataArrayLengths {
     pub l2_to_l1_msgs: u32,
 }
 
-pub global NOTE_HASH_SUBTREE_HEIGHT: u32 = 6;
-pub global NULLIFIER_SUBTREE_HEIGHT: u32 = 6;
-pub global MAX_NOTE_HASHES_PER_TX: u32 = (1 as u8 << NOTE_HASH_SUBTREE_HEIGHT as u8) as u32;
-pub global MAX_NULLIFIERS_PER_TX: u32 = (1 as u8 << NULLIFIER_SUBTREE_HEIGHT as u8) as u32;
-pub global MAX_L2_TO_L1_MSGS_PER_TX: u32 = 8;
-
-#[derive(Serialize)]
-pub struct ScopedL2ToL1Message {
-    pub message: L2ToL1Message,
-    pub contract_address: AztecAddress,
-}
-
 #[derive(Serialize)]
 pub struct EthAddress {
     inner: Field,
 }
 
 #[derive(Serialize)]
+pub struct AztecAddress {
+    pub inner: Field,
+}
+
+#[derive(Serialize)]
 pub struct L2ToL1Message {
     pub recipient: EthAddress,
     pub content: Field,
-    pub counter: u32,
 }
+
+pub struct Scoped<T> {
+    pub inner: T,
+    pub contract_address: AztecAddress,
+}
+
+impl<T> Serialize for Scoped<T>
+where
+    T: Serialize,
+{
+    let N: u32 = <T as Serialize>::N + 1;
+
+    fn serialize(self) -> [Field; Self::N] {
+        self.inner.serialize().concat([self.contract_address.to_field()])
+    }
+}
+
+pub global MAX_NOTE_HASHES_PER_TX: u32 = 64;
+pub global MAX_NULLIFIERS_PER_TX: u32 = 64;
+pub global MAX_L2_TO_L1_MSGS_PER_TX: u32 = 8;
+pub global PUBLIC_LOG_SIZE_IN_FIELDS: u32 = 13;
+pub global MAX_PUBLIC_LOGS_PER_TX: u32 = 8;
+pub global MAX_TOTAL_PUBLIC_DATA_UPDATE_REQUESTS_PER_TX: u32 = 64;
 
 #[derive(Serialize)]
 pub struct PrivateToAvmAccumulatedData {
     pub note_hashes: [Field; MAX_NOTE_HASHES_PER_TX],
     pub nullifiers: [Field; MAX_NULLIFIERS_PER_TX],
-    pub l2_to_l1_msgs: [ScopedL2ToL1Message; MAX_L2_TO_L1_MSGS_PER_TX],
+    pub l2_to_l1_msgs: [Scoped<L2ToL1Message>; MAX_L2_TO_L1_MSGS_PER_TX],
+}
+
+pub struct Log<let N: u32> {
+    pub fields: [Field; N],
+    // The actual length (number of fields) of the log to be included in the blobs.
+    pub length: u32,
+}
+
+impl<let N: u32> Serialize for Log<N> {
+    let N: u32 = N + 1; // +1 for length field
+
+    #[inline_always]
+    fn serialize(self) -> [Field; Self::N] {
+        let mut result = [0; Self::N];
+
+        // Copy log fields
+        for i in 0..N {
+            result[i] = self.fields[i];
+        }
+
+        // Store length as last field
+        result[N] = self.length as Field;
+
+        result
+    }
 }
 
 #[derive(Serialize)]
-pub struct What {
-    pub start_tree_snapshots: TreeSnapshots,
-    pub gas_settings: GasSettings,
-    pub public_setup_call_requests: [PublicCallRequest; MAX_ENQUEUED_CALLS_PER_TX],
-    pub public_app_logic_call_requests: [PublicCallRequest; MAX_ENQUEUED_CALLS_PER_TX],
+pub struct PublicDataWrite {
+    pub leaf_slot: Field,
+    pub value: Field,
+}
+
+#[derive(Serialize)]
+pub struct PublicLog {
+    pub log: Log<PUBLIC_LOG_SIZE_IN_FIELDS>,
+    pub contract_address: AztecAddress,
+}
+
+#[derive(Serialize)]
+pub struct AvmAccumulatedData {
+    // The note hashes from private combining with those made in the AVM execution.
+    pub note_hashes: [Field; MAX_NOTE_HASHES_PER_TX],
+    // The nullifiers from private combining with those made in the AVM execution.
+    pub nullifiers: [Field; MAX_NULLIFIERS_PER_TX],
+    // The L2 to L1 messages from private combining with those made in the AVM execution.
+    pub l2_to_l1_msgs: [Scoped<L2ToL1Message>; MAX_L2_TO_L1_MSGS_PER_TX],
+    // The public logs emitted from the AVM execution.
+    pub public_logs: [PublicLog; MAX_PUBLIC_LOGS_PER_TX],
+    // The public data writes made in the AVM execution.
+    pub public_data_writes: [PublicDataWrite; MAX_TOTAL_PUBLIC_DATA_UPDATE_REQUESTS_PER_TX],
+}
+
+#[derive(Serialize)]
+pub struct AvmCircuitPublicInputs {
     pub previous_revertible_accumulated_data_array_lengths: PrivateToAvmAccumulatedDataArrayLengths,
     pub previous_non_revertible_accumulated_data: PrivateToAvmAccumulatedData,
     pub previous_revertible_accumulated_data: PrivateToAvmAccumulatedData,
-    pub end_tree_snapshots: TreeSnapshots,
+
+    ///////////////////////////////////
+    // Outputs.
+    pub accumulated_data: AvmAccumulatedData,
+    pub reverted: bool,
 }
 
 fn main(x: Field, y: pub Field) {
