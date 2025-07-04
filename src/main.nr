@@ -131,7 +131,7 @@ where
     let N: u32 = <T as Serialize>::N + 1;
 
     fn serialize(self) -> [Field; Self::N] {
-        self.inner.serialize().concat([self.contract_address.to_field()])
+        self.inner.serialize().concat([self.contract_address.inner])
     }
 }
 
