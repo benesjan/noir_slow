@@ -120,18 +120,9 @@ impl Deserialize for Field {
     }
 }
 
-impl Deserialize for u32 {
-    let N: u32 = 1;
-
-    fn deserialize(fields: [Field; Self::N]) -> Self {
-        fields[0] as u32
-    }
-}
-
 #[derive(Deserialize)]
 pub struct Log<let O: u32> {
     pub fields: [Field; O],
-    // pub length: u32,
 }
 
 fn main() -> pub Field {
