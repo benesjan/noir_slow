@@ -1,15 +1,53 @@
-#[derive_via(derive_serialize)]
-pub trait Serialize {
-    let N: u32;
-
-    fn serialize(self) -> [Field; N];
+pub struct Reader<let N: u32> {
+    data: [Field; N],
+    offset: u32,
 }
 
-pub comptime fn derive_serialize(s: TypeDefinition) -> Quoted {
-    let typ = s.as_type();
-    let nested_struct = typ.as_data_type().unwrap();
-    let params = nested_struct.0.fields(nested_struct.1);
+impl<let N: u32> Reader<N> {
+    pub fn new(data: [Field; N]) -> Self {
+        Self { data, offset: 0 }
+    }
 
+    pub fn read(&mut self) -> Field {
+        let result = self.data[self.offset];
+        self.offset += 1;
+        result
+    }
+
+    pub fn read_array<let K: u32>(&mut self) -> [Field; K] {
+        let mut result = [0; K];
+        for i in 0..K {
+            result[i] = self.data[self.offset + i];
+        }
+        self.offset += K;
+        result
+    }
+
+    pub fn read_struct<T, let K: u32>(&mut self, deserialise: fn([Field; K]) -> T) -> T {
+        let result = deserialise(self.read_array());
+        result
+    }
+
+    pub fn read_struct_array<T, let K: u32, let C: u32>(
+        &mut self,
+        deserialise: fn([Field; K]) -> T,
+        mut result: [T; C],
+    ) -> [T; C] {
+        for i in 0..C {
+            result[i] = self.read_struct(deserialise);
+        }
+        result
+    }
+}
+
+#[derive_via(derive_deserialize)]
+pub trait Deserialize {
+    let N: u32;
+
+    fn deserialize(fields: [Field; N]) -> Self;
+}
+
+comptime fn get_generics_declarations(s: TypeDefinition) -> Quoted {
     let generics = s.generics();
 
     // We check that each generic's second tuple field (maybe_numeric_generic) is Some,
@@ -26,7 +64,7 @@ pub comptime fn derive_serialize(s: TypeDefinition) -> Quoted {
     // Constructs the "<let N: u32, let M: u8>" string that is injected after the "impl" keyword in e.g.
     // "impl<let N: u32, let M: u8> Serialize for Foo<N, M>".
     // Returns an empty quote if the struct has no generics.
-    let generics_declarations = if generics.len() > 0 {
+    if generics.len() > 0 {
         let generics_declarations_items = generics
             .map(|(name, typ)| {
                 let integer_type = typ.unwrap();
@@ -37,123 +75,100 @@ pub comptime fn derive_serialize(s: TypeDefinition) -> Quoted {
     } else {
         // The struct doesn't have any generics defined, so we just return an empty quote.
         quote {}
-    };
+    }
+}
 
-    std::println(generics_declarations);
+pub(crate) comptime fn derive_deserialize(s: TypeDefinition) -> Quoted {
+    let typ = s.as_type();
+    let nested_struct = typ.as_data_type().unwrap();
+    let params = nested_struct.0.fields(nested_struct.1);
 
-    // The following will give us <type_of_struct_member_1 as Serialize>::N + <type_of_struct_member_2 as Serialize>::N + ...
+    let generics_declarations = get_generics_declarations(s);
+
+    // The following will give us <type_of_struct_member_1 as Deserialize>::N + <type_of_struct_member_2 as Deserialize>::N + ...
     let right_hand_side_of_definition_of_n = params
         .map(|(_, param_type, _): (Quoted, Type, Quoted)| {
             quote {
-            <$param_type as $crate::Serialize>::N
+            <$param_type as Deserialize>::N
         }
         })
         .join(quote {+});
 
-    // Generates serialization code for each struct member that:
-    // 1. Serializes the member
-    // 2. Copies serialized fields into result array at correct offset
-    // 3. Updates offset for next member
-    let serialization_of_struct_members = params
+    // This generates deserialization code for each struct member that and concatenates them together.
+    let deserialization_of_struct_members = params
         .map(|(param_name, param_type, _): (Quoted, Type, Quoted)| {
+            std::println(param_type);
             quote {
-                let serialized_member = $crate::Serialize::serialize(self.$param_name);
-                let serialized_member_len = <$param_type as $crate::Serialize>::N;
-                for i in 0..serialized_member_len {
-                    result[i + offset] = serialized_member[i];
+                let mut member_fields = [0; <$param_type as Deserialize>::N];
+                for i in 0..<$param_type as Deserialize>::N {
+                    member_fields[i] = serialized[i + offset];
                 }
-                offset += serialized_member_len;
+                let $param_name = <$param_type as Deserialize>::deserialize(member_fields);
+                offset += <$param_type as Deserialize>::N;
             }
         })
         .join(quote {});
 
+    // We join the struct member names with a comma to be used in the `Self { ... }` syntax
+    // This will give us e.g. `a, b, c` for a struct with three fields named `a`, `b`, and `c`.
+    let struct_members = params
+        .map(|(param_name, _, _): (Quoted, Type, Quoted)| quote { $param_name })
+        .join(quote {,});
+
     quote {
-        impl $generics_declarations $crate::Serialize for $typ {
+        impl $generics_declarations Deserialize for $typ {
             let N: u32 = $right_hand_side_of_definition_of_n;
 
             #[inline_always]
-            fn serialize(self) -> [Field; Self::N] {
-                let mut result = [0; _];
+            fn deserialize(serialized: [Field; Self::N]) -> Self {
                 let mut offset = 0;
 
-                $serialization_of_struct_members
+                $deserialization_of_struct_members
 
-                result
+                Self { $struct_members }
             }
         }
     }
 }
 
-// // Note: We currently don't support derivation of Serialize and Deserialize traits for types with generics so we have
-// // the manual implementation below.
-// impl<let M: u32> Serialize for Log<M> {
-//     let N: u32 = M + 1; // +1 for length field
-
-//     #[inline_always]
-//     fn serialize(self) -> [Field; Self::N] {
-//         let mut result = [0; Self::N];
-
-//         // Copy log fields
-//         for i in 0..M {
-//             result[i] = self.fields[i];
-//         }
-
-//         // Store length as last field
-//         result[M] = self.length as Field;
-
-//         result
-//     }
-// }
-
-impl Serialize for u32 {
-    let N: u32 = 1;
-
-    fn serialize(self) -> [Field; Self::N] {
-        [self as Field]
-    }
-}
-
-impl Serialize for Field {
-    let N: u32 = 1;
-
-    fn serialize(self) -> [Field; Self::N] {
-        [self]
-    }
-}
-
-impl<T, let M: u32> Serialize for [T; M]
+impl<T, let M: u32> Deserialize for [T; M]
 where
-    T: Serialize,
+    T: Deserialize,
 {
-    let N: u32 = <T as Serialize>::N * M;
+    let N: u32 = <T as Deserialize>::N * M;
 
-    fn serialize(self) -> [Field; Self::N] {
-        let mut result: [Field; _] = std::mem::zeroed();
-        for i in 0..M {
-            let serialized_t = self[i].serialize();
-            for j in 0..<T as Serialize>::N {
-                result[i * <T as Serialize>::N + j] = serialized_t[j];
-            }
-        }
-        result
+    fn deserialize(fields: [Field; Self::N]) -> Self {
+        let mut reader = Reader::new(fields);
+        let mut result: [T; M] = std::mem::zeroed();
+        reader.read_struct_array::<T, <T as Deserialize>::N, M>(Deserialize::deserialize, result)
     }
 }
 
-#[derive(Serialize)]
-pub struct Log<let N: u32, let M: u32> {
-    pub fields: [Field; N],
-    pub what: [Field; M],
-    // The actual length (number of fields) of the log to be included in the blobs.
+impl Deserialize for Field {
+    let N: u32 = 1;
+
+    fn deserialize(fields: [Field; Self::N]) -> Self {
+        fields[0]
+    }
+}
+
+impl Deserialize for u32 {
+    let N: u32 = 1;
+
+    fn deserialize(fields: [Field; Self::N]) -> Self {
+        fields[0] as u32
+    }
+}
+
+#[derive(Deserialize)]
+pub struct Log<let O: u32> {
+    pub fields: [Field; O],
     pub length: u32,
 }
 
 fn main() -> pub Field {
-    let log = Log {
-        fields: [0 as Field; 10], // Creating a log with 10 fields initialized to 0
-        what: [0 as Field; 10],
-        length: 10,
-    };
+    let serialized = [0 as Field; 11]; // Array of 11 fields (10 for fields + 1 for length)
 
-    let serialized = log.serialize();
-    serialized[0] // Return first field of serialized log
+    let log = Log::<10>::deserialize(serialized);
+    log.fields[0] // Return first field of deserialized log
 }
