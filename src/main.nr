@@ -12,6 +12,8 @@ impl Deserialize for Field {
     }
 }
 
+// When the following is commented out, the code compiles.
+
 // impl<let O: u32> Deserialize for [Field; O] {
 //     let N: u32 = <Field as Deserialize>::N * O;
 
@@ -20,6 +22,7 @@ impl Deserialize for Field {
 //     }
 // }
 
+// The following implementations fails to get used on line 43.
 impl<let M: u32> Deserialize for [Field; M] {
     let N: u32 = <Field as Deserialize>::N * M;
 
