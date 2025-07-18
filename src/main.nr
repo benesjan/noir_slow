@@ -1,45 +1,3 @@
-pub struct Reader<let N: u32> {
-    data: [Field; N],
-    offset: u32,
-}
-
-impl<let N: u32> Reader<N> {
-    pub fn new(data: [Field; N]) -> Self {
-        Self { data, offset: 0 }
-    }
-
-    pub fn read(&mut self) -> Field {
-        let result = self.data[self.offset];
-        self.offset += 1;
-        result
-    }
-
-    pub fn read_array<let K: u32>(&mut self) -> [Field; K] {
-        let mut result = [0; K];
-        for i in 0..K {
-            result[i] = self.data[self.offset + i];
-        }
-        self.offset += K;
-        result
-    }
-
-    pub fn read_struct<T, let K: u32>(&mut self, deserialise: fn([Field; K]) -> T) -> T {
-        let result = deserialise(self.read_array());
-        result
-    }
-
-    pub fn read_struct_array<T, let K: u32, let C: u32>(
-        &mut self,
-        deserialise: fn([Field; K]) -> T,
-        mut result: [T; C],
-    ) -> [T; C] {
-        for i in 0..C {
-            result[i] = self.read_struct(deserialise);
-        }
-        result
-    }
-}
-
 #[derive_via(derive_deserialize)]
 pub trait Deserialize {
     let N: u32;
@@ -138,9 +96,19 @@ where
     let N: u32 = <T as Deserialize>::N * M;
 
     fn deserialize(fields: [Field; Self::N]) -> Self {
-        let mut reader = Reader::new(fields);
         let mut result: [T; M] = std::mem::zeroed();
-        reader.read_struct_array::<T, <T as Deserialize>::N, M>(Deserialize::deserialize, result)
+        let mut offset = 0;
+
+        for i in 0..M {
+            let mut element_fields = [0; <T as Deserialize>::N];
+            for j in 0..<T as Deserialize>::N {
+                element_fields[j] = fields[offset + j];
+            }
+            result[i] = T::deserialize(element_fields);
+            offset += <T as Deserialize>::N;
+        }
+
+        result
     }
 }
 
@@ -163,11 +131,11 @@ impl Deserialize for u32 {
 #[derive(Deserialize)]
 pub struct Log<let O: u32> {
     pub fields: [Field; O],
-    pub length: u32,
+    // pub length: u32,
 }
 
 fn main() -> pub Field {
-    let serialized = [0 as Field; 11]; // Array of 11 fields (10 for fields + 1 for length)
+    let serialized = [0 as Field; 10]; // Array of 11 fields (10 for fields + 1 for length)
 
     let log = Log::<10>::deserialize(serialized);
     log.fields[0] // Return first field of deserialized log
