@@ -89,29 +89,6 @@ pub(crate) comptime fn derive_deserialize(s: TypeDefinition) -> Quoted {
     }
 }
 
-impl<T, let M: u32> Deserialize for [T; M]
-where
-    T: Deserialize,
-{
-    let N: u32 = <T as Deserialize>::N * M;
-
-    fn deserialize(fields: [Field; Self::N]) -> Self {
-        let mut result: [T; M] = std::mem::zeroed();
-        let mut offset = 0;
-
-        for i in 0..M {
-            let mut element_fields = [0; <T as Deserialize>::N];
-            for j in 0..<T as Deserialize>::N {
-                element_fields[j] = fields[offset + j];
-            }
-            result[i] = T::deserialize(element_fields);
-            offset += <T as Deserialize>::N;
-        }
-
-        result
-    }
-}
-
 impl Deserialize for Field {
     let N: u32 = 1;
 
@@ -120,14 +97,49 @@ impl Deserialize for Field {
     }
 }
 
+impl<T, let M: u32> Deserialize for [T; M]
+where
+    T: Deserialize,
+{
+    let N: u32 = <T as Deserialize>::N * M;
+
+    fn deserialize(fields: [Field; Self::N]) -> Self {
+        let mut result: [T; M] = std::mem::zeroed();
+
+        for i in 0..M {
+            let mut element_fields = [0; <T as Deserialize>::N];
+            for j in 0..<T as Deserialize>::N {
+                element_fields[j] = fields[i * <T as Deserialize>::N + j];
+            }
+            result[i] = T::deserialize(element_fields);
+        }
+
+        result
+    }
+}
+
+// impl<let M: u32> Deserialize for [Field; M] {
+//     let N: u32 = <Field as Deserialize>::N * M;
+
+//     fn deserialize(fields: [Field; Self::N]) -> Self {
+//         let mut result: [Field; M] = std::mem::zeroed();
+//         for i in 0..M {
+//             let mut element_fields = [0; <Field as Deserialize>::N];
+//             for j in 0..<Field as Deserialize>::N {
+//                 element_fields[j] = fields[i * <Field as Deserialize>::N + j];
+//             }
+//             result[i] = Field::deserialize(element_fields);
+//         }
+//         result
+//     }
+// }
+
 #[derive(Deserialize)]
 pub struct Log<let O: u32> {
     pub fields: [Field; O],
 }
 
-fn main() -> pub Field {
-    let serialized = [0 as Field; 10]; // Array of 11 fields (10 for fields + 1 for length)
-
+fn main(serialized: [Field; 10]) -> pub Field {
     let log = Log::<10>::deserialize(serialized);
     log.fields[0] // Return first field of deserialized log
 }
